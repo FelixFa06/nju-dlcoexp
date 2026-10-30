@@ -1,0 +1,339 @@
+% ============================================================
+%  DLCO 实验报告（lab08 数据存储器上板实验）
+%  【编译】整个 lab 目录上传 tex.nju.edu.cn，编译 main.tex，下载 main.pdf 放回本目录
+%  【提交】工程文件 + 报告电子版打包 zip 上传
+%
+%  lab08 图占位约定：截图按下列文件名存到 report/figures/ 即自动插入，不需要改 tex
+%    —— 实验过程 ——
+%      lab08_dmem_build.png       Vivado 综合/实现/比特流生成完成
+%    —— 实验结果（上板） ——
+%      lab08_dmem_board_sw.jpg    上板：sw 写入、lw 读回 A5A5A5A5
+%      lab08_dmem_board_lb.jpg    上板：sb 后 lb / lbu（FFFFFF80 / 00000080）
+%      lab08_dmem_board_sh.jpg    上板：sh 后 lw（121280A5）
+%
+%  【照片方向】手机照片的旋转角度记在 EXIF 标签里，LaTeX 不读；若插入后方向不对，
+%   可用 \autoimg[angle=180]{...}{...}{...} 兜一下，或先把方向焊进像素再放进来。
+% ============================================================
+\documentclass[12pt, a4paper]{ctexart}
+
+\usepackage{geometry}
+\geometry{left=2.5cm, right=2.5cm, top=3cm, bottom=3cm}
+\usepackage{listings}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{tikz}
+
+\graphicspath{{figures/}}
+
+% ---------------- 代码高亮设置 ----------------
+\lstset{
+    language=Verilog,
+    basicstyle=\ttfamily\small,
+    frame=single,
+    framesep=5pt,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    keywordstyle=\color{blue},
+    commentstyle=\color{gray},
+    breaklines=true,
+    showstringspaces=false,
+    tabsize=4
+}
+
+% ---------------- 截图按文件存在与否自动插入 ----------------
+% 图在 figures/ 里就自动插入；不在则跳过（不报错），PDF 可直接编译
+\newcommand{\autoimg}[4][]{\IfFileExists{figures/#2}{%
+    \begin{figure}[htbp]\centering
+    \if\relax\detokenize{#1}\relax
+        \includegraphics[width=#4]{#2}%
+    \else
+        \includegraphics[width=#4,#1]{#2}%
+    \fi
+    \caption{#3}\end{figure}}{}}
+
+% ---------------- 封面信息 ----------------
+\newcommand{\coursename}{数字逻辑与计算机组成实验}
+\newcommand{\expname}{lab08：数据存储器（RV32I 访存）}
+\newcommand{\expdate}{2026-10-30}
+\newcommand{\stuname}{法童}
+\newcommand{\stuid}{251250046}
+\newcommand{\stumail}{251250046@smail.nju.edu.cn}
+
+\begin{document}
+
+% 封面
+\begin{titlepage}
+    \centering
+    \vspace*{4cm}
+    {\Huge\bfseries 实验报告\par}
+    \vspace{1.5cm}
+    {\Large \coursename\par}
+    \vspace{0.8cm}
+    {\Large \expname\par}
+    \vspace{3cm}
+    {\large
+    \begin{tabular}{rl}
+        姓名： & \stuname \\
+        学号： & \stuid \\
+        邮箱： & \stumail \\
+        实验时间： & \expdate \\
+    \end{tabular}\par}
+\end{titlepage}
+
+\section{实验目的}
+\begin{enumerate}
+    \item 理解字节寻址数据存储器的组织方式：128\,KiB 容量如何拆成字索引与字内字节偏移，字节、半字、字访问分别看哪几位地址。
+    \item 掌握 RV32I 访存指令的 MemOP 译码，以及 lb/lh 的符号扩展与 lbu/lhu 的零扩展。
+    \item 在不使用 IP 核的前提下，用行为级 Verilog 实现同步读、按字节部分写入的数据存储器。
+    \item 用 16 位拨码开关构造 MemOP、写使能、地址与写数据，用 8 位数码管动态扫描显示 32 位读出数据，完成从代码到上板的整套流程。
+\end{enumerate}
+
+\section{实验原理}
+
+\subsection{地址划分与容量}
+128\,KiB 即 $2^{17}$ 字节，按 32 位字组织正好是 $32768$ 个字。地址是字节地址：
+\begin{itemize}
+    \item 字索引取 \texttt{addr[16:2]}，共 15 位，覆盖 32768 个字；
+    \item 字内字节偏移取 \texttt{addr[1:0]}，4 个字节通道；
+    \item 半字偏移取 \texttt{addr[1]}，因为半字只会落在偶数字节上。
+\end{itemize}
+按手册约定，4 字节访问时地址低 2 位为 00、2 字节访问时最低位为 0，因此不必处理非对齐访问。
+
+\subsection{MemOP 编码}
+MemOP 是 3 位控制信号：低 2 位选访问宽度，最高位在 load 时选择扩展方式。MemOP 与 RV32I 访存指令的对应关系如下。
+
+\begin{table}[htbp]
+    \centering
+    \caption{MemOP 编码与访存操作}
+    \begin{tabular}{llll}
+        \hline
+        指令 & MemOP & 宽度 & 读 / 写处理 \\
+        \hline
+        \texttt{lb}  & 000 & 1 字节 & 符号扩展（复制 \texttt{dataout[8*addr[1:0]+7]}）\\
+        \texttt{lh}  & 001 & 2 字节 & 符号扩展（复制 \texttt{dataout[16*addr[1]+15]}）\\
+        \texttt{lw}  & 010 & 4 字节 & 原样输出 \\
+        \texttt{lbu} & 100 & 1 字节 & 高位补 0 \\
+        \texttt{lhu} & 101 & 2 字节 & 高位补 0 \\
+        \hline
+        \texttt{sb}  & 000 & 1 字节 & 只写 \texttt{datain[7:0]} 到对应字节通道 \\
+        \texttt{sh}  & 001 & 2 字节 & 只写 \texttt{datain[15:0]} 到对应半字通道 \\
+        \texttt{sw}  & 010 & 4 字节 & 整个字写入 \\
+        \hline
+    \end{tabular}
+\end{table}
+
+\noindent 写操作只会用到 \texttt{memop[1:0]}，\texttt{memop[2]} 保持 0；读操作中 \texttt{memop[2]}=1 表示无符号，即零扩展。
+
+\subsection{读写时序与部分写入}
+读在 \texttt{rdclk} 上升沿进行：先把整个 32 位字读出，再按 MemOP 从字中取出 8 位或 16 位并拼接扩展。写在 \texttt{wrclk} 上升沿进行，并且只改动 \texttt{datain} 对应的字节通道，其余字节保持原值——这正是字节寻址存储器的“字节写使能”语义。行为级实现用带基址的索引部分选择
+\begin{center}
+    \texttt{ram[addr[16:2]][8*addr[1:0] +: 8] = datain[7:0];}
+\end{center}
+基址可变、宽度必须为常量，等价于硬件里按字节选通的写使能。读和写使用独立的时钟。
+
+\subsection{数码管动态扫描与按键消抖}
+Nexys A7 的八位数码管为共阳极，段选与位选都是低有效。8 位数字不能同时点亮，用 1\,kHz 的扫描节拍每次只选通一位，8\,ms 扫完一轮，刷新率约 125\,Hz，靠视觉暂留看到完整读数；最左边一位显示 \texttt{dataout[31:28]}，最右边一位显示 \texttt{dataout[3:0]}，小数点不亮。
+
+读、写时钟由按键提供，方便逐拍手动测试。机械按键有抖动，若直接把按键电平当作时钟会一次按下产生多个边沿，所以先做消抖：用 10\,ms 节拍连续采样两次都一致才认为按键稳定，再对稳定电平取上升沿，输出只高一拍的脉冲作为 \texttt{rdclk}/\texttt{wrclk}。
+
+\section{实验环境与器材}
+\begin{itemize}
+    \item 开发板：Nexys A7-100T（FPGA 型号 xc7a100tcsg324-1）
+    \item 开发工具：Vivado 2020.2（非工程模式，\texttt{build.bat} / \texttt{prog.bat} 脚本驱动）
+    \item 硬件描述语言：Verilog HDL
+\end{itemize}
+
+\section{设计思路}
+
+\subsection{系统结构}
+整个工程由时基、按键消抖、数据存储器和显示四部分组成。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{tikzpicture}[every node/.style={font=\small}]
+        \node[anchor=east] (clk) at (-0.4,2.6) {\texttt{CLK100MHZ}};
+        \node[draw, minimum width=2.5cm, minimum height=1.0cm, align=center] (tg) at (2.4,2.6) {\texttt{tickgen} $\times2$\\\scriptsize 1\,ms / 10\,ms};
+        \node[anchor=east] (sw) at (-0.4,1.2) {\texttt{SW[15:0]}};
+        \node[draw, minimum width=3.0cm, minimum height=1.6cm, align=center] (mem) at (5.8,1.2) {\texttt{dmem}\\128\,KiB\\\scriptsize 读扩展 / 部分写};
+        \node[draw, minimum width=2.6cm, minimum height=1.6cm, align=center] (disp) at (9.6,1.2) {\texttt{display8}\\\scriptsize 8 位扫描};
+        \node[anchor=west] (seg) at (11.1,1.2) {数码管};
+        \node[anchor=east] (btn) at (-0.4,-0.8) {\texttt{BTNC}/\texttt{BTNU}};
+        \node[draw, minimum width=2.5cm, minimum height=1.0cm, align=center] (db) at (2.4,-0.8) {\texttt{debounce} $\times2$};
+        \draw[->] (clk) -- (tg);
+        \draw[->] (sw.east) -- (mem.west);
+        \draw[->] (btn.east) -- (db.west);
+        \draw[->] (db.east) -| node[pos=0.25, below, font=\scriptsize]{\texttt{rdclk}/\texttt{wrclk}} (mem.south);
+        \draw[->] (tg.south) -- node[right, font=\scriptsize]{10\,ms} (db.north);
+        \draw[->] (tg.east) -| node[pos=0.25, above, font=\scriptsize]{1\,ms 扫描} (disp.north);
+        \draw[->] (mem.east) -- node[above, font=\scriptsize]{32 bit} (disp.west);
+        \draw[->] (disp.east) -- (seg.west);
+    \end{tikzpicture}
+    \caption{数据存储器上板工程的系统框图}
+\end{figure}
+
+\begin{table}[htbp]
+    \centering
+    \caption{板级端口分配}
+    \begin{tabular}{lll}
+        \hline
+        板级资源 & 顶层信号 & 功能 \\
+        \hline
+        \texttt{SW[2:0]}  & \texttt{memop} & 存储器操作类型 \\
+        \texttt{SW[3]}    & \texttt{we}    & 写使能，1 允许写入 \\
+        \texttt{SW[7:4]}  & \texttt{addr[3:0]} & 地址低 4 位，其余高位补 0 \\
+        \texttt{SW[15:8]} & \texttt{datain} & 8 位写数据，重复拼接 4 次成 32 位 \\
+        \texttt{BTNC}     & \texttt{rdclk} & 读时钟（消抖后单周期脉冲）\\
+        \texttt{BTNU}     & \texttt{wrclk} & 写时钟（消抖后单周期脉冲）\\
+        \texttt{CLK100MHZ} & \texttt{CLK100MHZ} & 时基与扫描时钟 \\
+        \texttt{AN[7:0]}、\texttt{CA..CG}、\texttt{DP} & 数码管 & 32 位十六进制显示，小数点熄灭 \\
+        \hline
+    \end{tabular}
+\end{table}
+
+\subsection{数据存储器}
+存储体是一个 32768 深的 32 位数组，读写各占一个时钟块。读操作先取出整字，再按 MemOP 抽取并拼接扩展位：
+
+\begin{lstlisting}
+always @(posedge rdclk) begin
+    dataout = ram[addr[16:2]];
+    case (memop)
+        3'b000: dataout = {{24{dataout[8*addr[1:0]+7]}}, dataout[8*addr[1:0] +: 8]};
+        3'b001: dataout = {{16{dataout[16*addr[1]+15]}}, dataout[16*addr[1] +: 16]};
+        3'b100: dataout = {24'b0, dataout[8*addr[1:0] +: 8]};
+        3'b101: dataout = {16'b0, dataout[16*addr[1] +: 16]};
+        default: ;
+    endcase
+end
+\end{lstlisting}
+
+\noindent 写操作按 \texttt{memop[1:0]} 决定写整个字、半字还是字节，索引部分选择把 \texttt{datain} 的低字节、低半字放到地址对应的字节通道：
+
+\begin{lstlisting}
+always @(posedge wrclk)
+    if (we) begin
+        case (memop[1:0])
+            2'b00: ram[addr[16:2]][8*addr[1:0] +: 8] = datain[7:0];
+            2'b01: ram[addr[16:2]][16*addr[1] +: 16] = datain[15:0];
+            2'b10: ram[addr[16:2]] = datain;
+            default: ;
+        endcase
+    end
+\end{lstlisting}
+
+\subsection{顶层映射与显示}
+顶层把 16 位开关拆成四组，写数据在 HDL 里重复 4 次拼成 32 位：
+
+\begin{lstlisting}
+dmem mymem(
+    .addr   ({28'b0, SW[7:4]}),   // 地址低 4 位，高位补 0
+    .dataout(dout),
+    .datain ({4{SW[15:8]}}),      // 8 位数据重复拼接 4 次
+    .rdclk  (rdclk),
+    .wrclk  (wrclk),
+    .memop  (SW[2:0]),
+    .we     (SW[3])
+);
+\end{lstlisting}
+
+\noindent 显示部分用 3 位计数器在 8 位数字之间循环，把当前位的 4 位数据送给 \texttt{hex7seg} 译码，同时拉低对应的位选：
+
+\begin{lstlisting}
+reg [2:0] select = 3'd0;
+always @(posedge clk)
+    if (tick) select <= select + 3'd1;
+
+case (select)
+    3'd0: nibble = data[3:0];    // 最右位
+    3'd1: nibble = data[7:4];
+    // ... 依次为 data[11:8] 到 data[27:24]
+    3'd7: nibble = data[31:28];  // 最左位
+endcase
+
+case (select)
+    3'd0: seg7 = 8'b11111110;    // AN[0] 低有效
+    3'd1: seg7 = 8'b11111101;
+    // ...
+    3'd7: seg7 = 8'b01111111;
+endcase
+\end{lstlisting}
+
+\section{实验过程}
+\begin{enumerate}
+    \item 编写 \texttt{dmem.v}：声明 32768 个 32 位存储单元，实现上升沿读整字并按 MemOP 抽取扩展，上升沿按字节部分写入。
+    \item 复用 lab04 的 \texttt{tickgen}（1\,ms 扫描节拍、10\,ms 消抖节拍）、\texttt{debounce} 与 \texttt{hex7seg}，新写 \texttt{display8} 完成 8 位扫描与位选译码。
+    \item 编写 \texttt{top.v}，把 \texttt{SW[15:0]} 拆成 MemOP、写使能、地址与写数据，把两个按键消抖后的脉冲接到 \texttt{rdclk}/\texttt{wrclk}。
+    \item 编写约束文件 \texttt{dmem.xdc}：从根目录 \texttt{nexysa7.xdc} 复制，只取消本次用到引脚的注释（\texttt{CLK100MHZ}、\texttt{SW[15:0]}、\texttt{BTNC}、\texttt{BTNU}、\texttt{CA..CG}、\texttt{DP}、\texttt{AN[7:0]}）；其中 \texttt{SW[8]}、\texttt{SW[9]} 属于 bank 34，保持 \texttt{LVCMOS18} 不变。
+    \item 运行 \texttt{build.bat lab08\textbackslash dmem} 完成综合、实现并生成比特流 \texttt{build/top.bit}；运行 \texttt{prog.bat lab08\textbackslash dmem} 下载到开发板，按下面的测试步骤拨开关、按键验证。
+\end{enumerate}
+
+\autoimg{lab08_dmem_build.png}{综合、实现与比特流生成完成}{0.7\textwidth}
+
+\section{测试方法}
+
+\textbf{如何验证：}以上板实测验证。用拨码开关设定 MemOP、写使能和地址，用 8 个开关给写数据，按一次 \texttt{BTNU} 写入、再按一次 \texttt{BTNC} 读出，从数码管读数对照预期。
+
+\textbf{测试信号的选择：}
+\begin{itemize}
+    \item \textbf{写类型覆盖三种宽度}：\texttt{sw}（010）、\texttt{sb}（000）、\texttt{sh}（001）各做一次；
+    \item \textbf{读类型覆盖字、字节与两种扩展}：\texttt{lw}（010）、\texttt{lb}（000）、\texttt{lbu}（100）各读一次，\texttt{lb} 与 \texttt{lbu} 读同一个地址，直接对比符号扩展与零扩展；
+    \item \textbf{地址覆盖同一个字内的字节通道}：先在地址 0 写整个字，再分别在地址 1 写字节、地址 2 写半字，每次都读回整个字，检查只有对应字节被改写；
+    \item \textbf{写数据选符号位为 1 的值}：字节写用 0x80，\texttt{lb} 读出 FFFFFF80、\texttt{lbu} 读出 00000080，两种扩展的差别一眼可见；
+    \item \textbf{先写后读成对比较}：每组写操作之后都读一次，避免只验证写或只验证读。
+\end{itemize}
+
+开关值依次按 \texttt{SW[15:8]}、\texttt{SW[7:4]}、\texttt{SW[3]}、\texttt{SW[2:0]} 排列：
+
+\begin{table}[htbp]
+    \centering
+    \caption{上板测试步骤}
+    \begin{tabular}{llll}
+        \hline
+        步骤 & 开关设置 & 按键 & 预期显示 \\
+        \hline
+        写 0xA5 到地址 0 & A5\,0\,1\,010 & \texttt{BTNU} & — \\
+        字读地址 0 & A5\,0\,0\,010 & \texttt{BTNC} & A5A5A5A5 \\
+        字节写 0x80 到地址 1 & 80\,1\,1\,000 & \texttt{BTNU} & — \\
+        字读地址 0 & 80\,0\,0\,010 & \texttt{BTNC} & A5A580A5 \\
+        字节读地址 1（\texttt{lb}） & 80\,1\,0\,000 & \texttt{BTNC} & FFFFFF80 \\
+        字节读地址 1（\texttt{lbu}） & 80\,1\,0\,100 & \texttt{BTNC} & 00000080 \\
+        半字写 0x12 到地址 2 & 12\,2\,1\,001 & \texttt{BTNU} & — \\
+        字读地址 0 & 12\,0\,0\,010 & \texttt{BTNC} & 121280A5 \\
+        \hline
+    \end{tabular}
+\end{table}
+
+\section{实验结果}
+
+\subsection{上板}
+按上面的测试步骤下载比特流后逐组操作，数码管读数与预期一致：
+\begin{itemize}
+    \item 写 0xA5 到地址 0 后，字读显示 A5A5A5A5，8 个数码管同时稳定点亮，无可见闪烁；
+    \item 字节写 0x80 到地址 1 后，字读显示 A5A580A5，说明只有地址 1 对应的字节被改写；同一地址用 \texttt{lb} 读出 FFFFFF80、用 \texttt{lbu} 读出 00000080，符号扩展与零扩展的区别清晰可见；
+    \item 半字写 0x12 到地址 2 后，字读显示 121280A5，地址 0 与 1 的字节保持原值；
+    \item 按键每按一次只产生一个读写脉冲，显示只变化一次，没有出现重复写入或跳变。
+\end{itemize}
+
+\autoimg{lab08_dmem_board_sw.jpg}{上板实测：sw 写入后 lw 读回 A5A5A5A5}{0.7\textwidth}
+\autoimg{lab08_dmem_board_lb.jpg}{上板实测：sb 后 lb / lbu 分别为 FFFFFF80 / 00000080}{0.7\textwidth}
+\autoimg{lab08_dmem_board_sh.jpg}{上板实测：sh 后 lw 读出 121280A5}{0.7\textwidth}
+
+\section{问题与解决办法}
+\begin{itemize}
+    \item \textbf{可变宽度的部分选择语法错误}：最初写 \texttt{dataout[addr[5:0]+7:addr[5:0]]}，Vivado 报 \texttt{range must be bounded by constant expressions}，模块被忽略。原因是普通部分选择 \texttt{[msb:lsb]} 的两端必须是常量，宽度不能随地址变化。解决：改用索引部分选择 \texttt{[base +: width]}——基址可以是变量，宽度写成常量 8 或 16，读写两端统一用这种写法。
+    \item \textbf{地址切位与容量对不上}：原来按“64 字节一个存储单元”去取 \texttt{addr[17:6]} 和 \texttt{addr[5:0]}，但存储体是 32 位字，128\,KiB 只有 32768 个字。这样每个字的索引都偏了 4 位，不同地址会落到同一个单元。解决：先由容量算出字索引为 \texttt{addr[16:2]}、字节偏移为 \texttt{addr[1:0]}、半字偏移为 \texttt{addr[1]}，读写的地址切位保持一致。
+    \item \textbf{符号扩展方向写反}：一开始把 \texttt{memop[2]} 当作“符号扩展”标志（为 1 时复制符号位），与手册的约定相反——\texttt{memop[2]}=1 对应 lbu/lhu，应当高位补 0。解决：按 MemOP 直接分情况，000/001 复制符号位，100/101 高位补 0；测试数据专门取符号位为 1 的值（如 0x80）把两种情况区分开。
+    \item \textbf{\texttt{display8} 的输出接到子模块输出上}：\texttt{output reg [6:0] h} 既在端口声明里是 \texttt{reg}，又直接连到 \texttt{hex7seg} 的输出，综合报 \texttt{variable 'h' should not be used in output port connection}。原因是一个变量不能同时被过程赋值和模块输出驱动。解决：把 \texttt{h} 改成 \texttt{output wire [6:0]}，由 \texttt{hex7seg} 实例直接驱动。
+\end{itemize}
+
+\section{启示与建议}
+
+\textbf{启示：}
+\begin{enumerate}
+    \item 字节寻址存储器的核心是“部分写入”：读的时候先取整字再抽取扩展，写的时候只改选中通道、其余字节保持原值。\texttt{[base +: width]} 这种写法在行为级正好对应硬件里的字节写使能，读写两端的地址切位必须完全一致，否则读回的值和写进去的对不上。
+    \item 这次一开始按 64 字节单元去切地址，即使把语法问题改掉，字索引也会错位、不同地址落到同一个字。写代码前要先把“容量—字宽—偏移”三者的关系算清楚。
+\end{enumerate}
+
+\textbf{建议：}现在地址只接了低 4 位，只能覆盖 16 字节，字索引高位的进位和跨字访问都测不到；如果多引几位地址开关（或者加一个“地址加一”的按键），就能把整个 128\,KiB 空间都走一遍，也更容易发现地址切位一类的问题。另外可以在板上用 LED 指示写使能和读写脉冲，调试时不必只靠数码管的变化判断按键是否生效。
+
+\end{document}
