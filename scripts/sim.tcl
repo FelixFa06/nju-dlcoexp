@@ -7,4 +7,4 @@ set vfiles [concat [glob ./*.v] [glob ./sim/*.v]]
 
 exec xvlog {*}$vfiles
 exec xelab -debug typical -timescale 1ns/1ps -s sim_snapshot tb_top
-exec xsim sim_snapshot -R
+exec xsim sim_snapshot -R >@stdout

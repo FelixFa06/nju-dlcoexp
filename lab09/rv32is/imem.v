@@ -1,5 +1,6 @@
 module imem(
     input  rdclk,
+    input  en,
     input  [31:0] addr,
     output reg [31:0] dataout
 );
@@ -8,6 +9,7 @@ module imem(
     initial $readmemh("inst.hex", ram);
 
     always @(posedge rdclk)
-        dataout = ram[addr[11:2]];
-    
+        if (en)
+            dataout <= ram[addr[11:2]];
+
 endmodule

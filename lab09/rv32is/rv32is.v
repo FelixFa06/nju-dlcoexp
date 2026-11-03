@@ -1,6 +1,7 @@
 module rv32is(
 	input 	clock,
 	input 	reset,
+	input 	en,
 	output [31:0] imemaddr,
 	input  [31:0] imemdataout,
 	output 	imemclk,
@@ -62,7 +63,8 @@ module rv32is(
 	assign instr = imemdataout;
 	assign nextpc = (~pcasrc ? 32'd4 : imm) + (~pcbsrc ? pc : busa);
 	always @(negedge clock)
-		pc <= reset ? 32'd0 : nextpc;
+		if (reset || en)
+			pc <= reset ? 32'd0 : nextpc;
 
 	// ID
 	assign op = instr[6:0];
@@ -80,7 +82,7 @@ module rv32is(
 		.rb(rs2),
 		.rw(rd),
 		.wrdata(busw),
-		.regwr(regwr),
+		.regwr(regwr & en),
 		.wrclk(~clock),
 		.outa(busa),
 		.outb(busb)
