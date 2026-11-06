@@ -2,7 +2,7 @@
 """最小 RV32I 汇编器：只覆盖本实验两个演示程序用到的指令。
 
 用法: python asm.py [输出文件]
-默认把 fib.s / prime.s 各补齐到 512 字，拼成 inst.hex（两个 bank）。
+默认把 fib.s / prime.s 各补齐到 128 字，拼成 inst.hex（两个 bank）。
 """
 
 import os
@@ -10,7 +10,7 @@ import re
 import sys
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-BANK_WORDS = 512
+BANK_WORDS = 128
 SOURCES = ["fib.s", "prime.s"]
 
 ABI = {

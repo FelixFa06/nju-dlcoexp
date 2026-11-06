@@ -4,7 +4,7 @@
 // SW[11:0] 参数 n
 // BTNC     单步按键
 // LED      当前 PC 低 16 位
-// 七段显示 32 位结果（十六进制）
+// 七段显示 高 4 位 = 输入参数，低 4 位 = 结果（十六进制）
 module top(
     input wire CLK100MHZ,
     input wire [15:0] SW,
@@ -60,9 +60,9 @@ module top(
         .dbgdata(pc)
     );
 
-    //指令存储器，两个程序各占 2 KiB（512 条指令）
+    //指令存储器，两个程序各占 512 B（128 条指令）
     wire [31:0] imemaddr_bank;
-    assign imemaddr_bank = {20'b0, SW[13], imemaddr[10:0]};
+    assign imemaddr_bank = {22'b0, SW[13], imemaddr[8:0]};
 
     imem u_imem(
         .rdclk(imemclk),
@@ -104,7 +104,7 @@ module top(
     display8 u_display(
         .clk(CLK100MHZ),
         .tick(tick_1ms),
-        .data(result),
+        .data({4'h0, SW[11:0], result[15:0]}),
         .seg7(AN),
         .h({CG, CF, CE, CD, CC, CB, CA})
     );

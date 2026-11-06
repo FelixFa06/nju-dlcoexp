@@ -141,6 +141,30 @@ module tb_top;
         steps(120);
         check(u_top.result, 32'd1, "prime(13)");
 
+        // 素数 11 -> 1
+        SW[11:0] = 12'd11;
+        do_reset;
+        steps(120);
+        check(u_top.result, 32'd1, "prime(11)");
+
+        // 素数 2 -> 1
+        SW[11:0] = 12'd2;
+        do_reset;
+        steps(60);
+        check(u_top.result, 32'd1, "prime(2)");
+
+        // 素数 4 -> 0
+        SW[11:0] = 12'd4;
+        do_reset;
+        steps(60);
+        check(u_top.result, 32'd0, "prime(4)");
+
+        // 素数 9 -> 0
+        SW[11:0] = 12'd9;
+        do_reset;
+        steps(100);
+        check(u_top.result, 32'd0, "prime(9)");
+
         // 素数 15 -> 0
         SW[11:0] = 12'd15;
         do_reset;
